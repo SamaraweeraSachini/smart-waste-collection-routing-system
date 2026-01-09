@@ -4,6 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 @Entity
+@Table(name = "driver")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -14,6 +15,15 @@ public class Driver {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private String name;      // Driver's name
-    private boolean available; // True if driver is available for assignment
+    private String name;
+
+    @Column(name = "phone_number")
+    private String phoneNumber;
+
+    @Column(name = "vehicle_number")
+    private String vehicleNumber;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private Boolean available = true; // default true to avoid null errors
 }

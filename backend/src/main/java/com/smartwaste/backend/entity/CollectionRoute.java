@@ -2,10 +2,12 @@ package com.smartwaste.backend.entity;
 
 import jakarta.persistence.*;
 import lombok.*;
-import java.time.LocalDateTime;
+
+import java.time.LocalDate;
 import java.util.List;
 
 @Entity
+@Table(name = "collection_route")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
@@ -16,19 +18,22 @@ public class CollectionRoute {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private LocalDateTime createdAt; // When route was created
+    // Link to driver
+    @ManyToOne
+    @JoinColumn(name = "driver_id", nullable = false)
+    private Driver driver;
 
-    private String status; // ASSIGNED, IN_PROGRESS, COMPLETED
-
+    // Link to bins
     @ManyToMany
     @JoinTable(
-        name = "route_bins",
-        joinColumns = @JoinColumn(name = "route_id"),
-        inverseJoinColumns = @JoinColumn(name = "bin_id")
+            name = "collection_route_bins",
+            joinColumns = @JoinColumn(name = "route_id"),
+            inverseJoinColumns = @JoinColumn(name = "bin_id")
     )
-    private List<Bin> bins; // Bins assigned to this route
+    private List<Bin> bins;
 
-    @ManyToOne
-    @JoinColumn(name = "driver_id")
-    private Driver driver; // Driver assigned to this route
+    private LocalDate routeDate;
+
+    @Column(nullable = false)
+    private String status; // e.g., "PENDING", "COMPLETED"
 }

@@ -32,3 +32,177 @@ a {
 a:hover {
   color: #535bf2;
 }
+
+/* ------------------ Route Date Filter UI ------------------ */
+.mapPage {
+  height: 100vh;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+  background: white;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+.topBarTitle {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.topBarControls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.topBarLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.topBarSelect {
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: white;
+  font-size: 13px;
+}
+
+.topBarHint {
+  font-size: 13px;
+  color: #374151;
+}
+
+.mapContainer {
+  flex: 1;
+  width: 100%;
+}
+
+/* ------------------ LIVE IoT Layout ------------------ */
+.layout {
+  height: 100vh;
+  width: 100%;
+  display: flex;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+.sidebar {
+  width: 330px;
+  border-right: 1px solid #e5e7eb;
+  background: white;
+  padding: 12px;
+  overflow: auto;
+}
+
+.sidebarTitle {
+  font-weight: 800;
+  margin-bottom: 12px;
+  font-size: 16px;
+}
+
+.sidebarSection {
+  margin-bottom: 16px;
+}
+
+.sidebarSectionTitle {
+  font-weight: 700;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.alertCard {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.alertCritical {
+  background: #fff1f2;
+}
+
+.alertWarning {
+  background: #fff7ed;
+}
+
+.emptyText {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  font-size: 13px;
+  background: white;
+}
+
+.smallText {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #374151;
+  line-height: 1.4;
+}
+
+.mapWrap {
+  flex: 1;
+  height: 100%;
+}
+
+/* ------------------ FORCE readable colors (fix invisible text) ------------------ */
+.layout {
+  color: #111827; /* dark text */
+  background: #f9fafb; /* light background */
+}
+
+.sidebar {
+  color: #111827;         /* force dark text */
+  background: #ffffff;    /* white sidebar */
+}
+
+.sidebarTitle,
+.sidebarSectionTitle,
+.alertCard,
+.smallText,
+.emptyText,
+label,
+select,
+option {
+  color: #111827; /* force readable text everywhere */
+}
+
+.smallText {
+  color: #374151; /* slightly softer for small text */
+}
+
+.emptyText {
+  color: #6b7280;
+}
+
+.btnPrimary {
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 12px;
+  background: #111827;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btnPrimary:hover {
+  opacity: 0.92;
+}

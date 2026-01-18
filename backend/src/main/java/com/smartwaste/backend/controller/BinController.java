@@ -15,25 +15,33 @@ public class BinController {
 
     private final BinService binService;
 
-    // Get all bins
+    // ✅ Get all bins
     @GetMapping
     public ResponseEntity<List<BinDTO>> getAllBins() {
         return ResponseEntity.ok(binService.getAllBins());
     }
 
-    // Create a bin
+    // ✅ Create a bin
     @PostMapping
     public ResponseEntity<BinDTO> createBin(@RequestBody BinDTO dto) {
         return ResponseEntity.ok(binService.createBin(dto));
     }
 
-    // Update a bin
+    // ✅ Update a bin
     @PutMapping("/{id}")
     public ResponseEntity<BinDTO> updateBin(@PathVariable Long id, @RequestBody BinDTO dto) {
         return ResponseEntity.ok(binService.updateBin(id, dto));
     }
 
-    // Delete a bin
+    // ✅ NEW: Collect bin (truck reached bin)
+    // PATCH http://localhost:8080/api/bins/{id}/collect
+    @PatchMapping("/{id}/collect")
+    public ResponseEntity<?> collectBin(@PathVariable Long id) {
+        binService.collectBin(id);
+        return ResponseEntity.ok().build();
+    }
+
+    // ✅ Delete a bin
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> deleteBin(@PathVariable Long id) {
         binService.deleteBin(id);

@@ -71,6 +71,17 @@ public class CollectionRouteService {
         return toDTO(updated);
     }
 
+    // ✅ NEW: Update ONLY status
+    public CollectionRouteDTO updateRouteStatus(Long id, String newStatus) {
+        CollectionRoute route = routeRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Route not found"));
+
+        route.setStatus(newStatus);
+
+        CollectionRoute updated = routeRepository.save(route);
+        return toDTO(updated);
+    }
+
     public void deleteRoute(Long id) {
         routeRepository.deleteById(id);
     }

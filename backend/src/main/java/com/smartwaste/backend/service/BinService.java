@@ -62,4 +62,15 @@ public class BinService {
                 .overflow(bin.isOverflow())
                 .build();
     }
+
+    public void collectBin(Long id) {
+    Bin bin = binRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("Bin not found: " + id));
+
+    bin.setFillLevel(0);
+    bin.setOverflow(false);
+
+    binRepository.save(bin);
+}
+
 }

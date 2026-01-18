@@ -23,18 +23,41 @@ public class AutoRouteService {
         double lat;
         double lng;
         int fill;
+        boolean overflow;
 
-        BinPoint(long id, double lat, double lng, int fill) {
+        BinPoint(long id, double lat, double lng, int fill, boolean overflow) {
             this.id = id;
             this.lat = lat;
             this.lng = lng;
             this.fill = fill;
+            this.overflow = overflow;
         }
     }
 
     private static class DriverRow {
         long id;
-        DriverRow(long id) { this.id = id; }
+        double lat;
+        double lng;
+
+        DriverRow(long id, double lat, double lng) {
+            this.id = id;
+            this.lat = lat;
+            this.lng = lng;
+        }
+    }
+
+    private static class DriverState {
+        long driverId;
+        double curLat;
+        double curLng;
+        int stops;
+
+        DriverState(long driverId, double curLat, double curLng) {
+            this.driverId = driverId;
+            this.curLat = curLat;
+            this.curLng = curLng;
+            this.stops = 0;
+        }
     }
 
     @Transactional
@@ -43,32 +66,39 @@ public class AutoRouteService {
         // ✅ 0) Clear existing routes for that date (prevents duplicates)
         clearRoutesForDate(routeDate);
 
-        // 1) bins that need collection
+        // ✅ 1) Pick ONLY bins that need collection (NO green bins)
+        // Priority: overflow first, then highest fill
         List<BinPoint> bins = jdbc.query(
                 "SELECT id, latitude, longitude, fill_level, overflow " +
                         "FROM bin " +
                         "WHERE fill_level >= ? OR overflow = true " +
-                        "ORDER BY fill_level DESC",
+                        "ORDER BY overflow DESC, fill_level DESC",
                 (rs, rowNum) -> new BinPoint(
                         rs.getLong("id"),
                         rs.getDouble("latitude"),
                         rs.getDouble("longitude"),
-                        rs.getInt("fill_level")
+                        rs.getInt("fill_level"),
+                        rs.getBoolean("overflow")
                 ),
                 threshold
         );
 
-        // 2) available drivers
+        // ✅ 2) Available drivers WITH location (so we can assign nearest)
         List<DriverRow> drivers = jdbc.query(
-                "SELECT id FROM driver WHERE available = true ORDER BY id",
-                (rs, rowNum) -> new DriverRow(rs.getLong("id"))
+                "SELECT id, latitude, longitude FROM driver WHERE available = true ORDER BY id",
+                (rs, rowNum) -> new DriverRow(
+                        rs.getLong("id"),
+                        rs.getDouble("latitude"),
+                        rs.getDouble("longitude")
+                )
         );
 
         if (bins.isEmpty()) {
             return Map.of(
                     "message", "No bins above threshold / overflow. Nothing to route.",
                     "routesCreated", 0,
-                    "binsUsed", 0
+                    "binsUsed", 0,
+                    "routeDate", routeDate.toString()
             );
         }
 
@@ -76,41 +106,51 @@ public class AutoRouteService {
             return Map.of(
                     "message", "No available drivers. Cannot generate routes.",
                     "routesCreated", 0,
-                    "binsUsed", 0
+                    "binsUsed", 0,
+                    "routeDate", routeDate.toString()
             );
         }
 
-        // ✅ EXTRA SAFETY: If only 1 bin exists, no meaningful route possible
-        if (bins.size() < 2) {
-            return Map.of(
-                    "message", "Only 1 bin needs collection. Not generating routes (needs 2+ bins for a route line).",
-                    "routesCreated", 0,
-                    "binsUsed", bins.size()
-            );
-        }
-
-        // 3) split bins among drivers (round-robin) with capacity limit
+        // ✅ 3) Assign each bin to the NEAREST driver (fuel/time saving)
         Map<Long, List<BinPoint>> assignment = new LinkedHashMap<>();
-        for (DriverRow d : drivers) assignment.put(d.id, new ArrayList<>());
+        Map<Long, DriverState> driverState = new LinkedHashMap<>();
 
-        int driverIndex = 0;
+        for (DriverRow d : drivers) {
+            assignment.put(d.id, new ArrayList<>());
+            driverState.put(d.id, new DriverState(d.id, d.lat, d.lng));
+        }
+
+        int binsUsed = 0;
 
         for (BinPoint b : bins) {
-            int attempts = 0;
+            Long bestDriverId = null;
+            double bestDistance = Double.MAX_VALUE;
 
-            while (attempts < drivers.size()) {
-                long driverId = drivers.get(driverIndex).id;
-                List<BinPoint> list = assignment.get(driverId);
+            for (DriverState st : driverState.values()) {
+                if (st.stops >= maxStopsPerRoute) continue; // capacity reached
 
-                if (list.size() < maxStopsPerRoute) {
-                    list.add(b);
-                    driverIndex = (driverIndex + 1) % drivers.size();
-                    break;
+                double dist = haversine(st.curLat, st.curLng, b.lat, b.lng);
+                if (dist < bestDistance) {
+                    bestDistance = dist;
+                    bestDriverId = st.driverId;
                 }
-
-                driverIndex = (driverIndex + 1) % drivers.size();
-                attempts++;
             }
+
+            if (bestDriverId == null) {
+                // all drivers are full (maxStops reached)
+                continue;
+            }
+
+            assignment.get(bestDriverId).add(b);
+
+            // ✅ update driver's "current position" to this bin,
+            // so next assignments naturally become a nearby cluster
+            DriverState st = driverState.get(bestDriverId);
+            st.curLat = b.lat;
+            st.curLng = b.lng;
+            st.stops++;
+
+            binsUsed++;
         }
 
         // remove empty driver assignments
@@ -123,25 +163,18 @@ public class AutoRouteService {
                         LinkedHashMap::new
                 ));
 
-        // ✅ NEW STEP: Fix "single-bin routes"
-        // If a driver got only 1 bin, move that bin into another route (if possible)
-        assignment = mergeSingleBinRoutes(assignment, maxStopsPerRoute);
-
         int routesCreated = 0;
-        int binsUsed = 0;
 
-        for (Map.Entry<Long, List<BinPoint>> entry : assignment.entrySet()) {
-            long driverId = entry.getKey();
-            List<BinPoint> driverBins = entry.getValue();
+        // ✅ 4) Insert routes + ordered bins (nearest neighbor ordering per driver)
+        for (DriverRow d : drivers) {
+            List<BinPoint> assignedBins = assignment.get(d.id);
+            if (assignedBins == null || assignedBins.isEmpty()) continue;
 
-            // ✅ Guarantee route is meaningful
-            if (driverBins.size() < 2) {
-                continue;
-            }
+            // Order bins to reduce distance:
+            List<BinPoint> ordered = nearestNeighborOrderFromStart(assignedBins, d.lat, d.lng);
 
-            List<BinPoint> ordered = nearestNeighborOrder(driverBins);
-
-            Long routeId = insertRouteAndReturnId(driverId, routeDate);
+            // ✅ IMPORTANT: status is ASSIGNED (blue in UI until Start Collecting)
+            Long routeId = insertRouteAndReturnId(d.id, routeDate, "assigned");
 
             for (BinPoint bp : ordered) {
                 jdbc.update(
@@ -151,7 +184,6 @@ public class AutoRouteService {
             }
 
             routesCreated++;
-            binsUsed += ordered.size();
         }
 
         return Map.of(
@@ -164,50 +196,8 @@ public class AutoRouteService {
         );
     }
 
-    // ✅ NEW: merge single-bin routes into other routes so polylines always show
-    private Map<Long, List<BinPoint>> mergeSingleBinRoutes(Map<Long, List<BinPoint>> assignment, int maxStopsPerRoute) {
-
-        // Collect drivers who have exactly 1 bin
-        List<Long> singleDrivers = assignment.entrySet().stream()
-                .filter(e -> e.getValue().size() == 1)
-                .map(Map.Entry::getKey)
-                .toList();
-
-        for (Long singleDriverId : singleDrivers) {
-
-            BinPoint lonelyBin = assignment.get(singleDriverId).get(0);
-
-            // Find a target driver who has space AND already has at least 2 bins (best)
-            Long targetDriver = assignment.entrySet().stream()
-                    .filter(e -> !e.getKey().equals(singleDriverId))
-                    .filter(e -> e.getValue().size() < maxStopsPerRoute)
-                    .sorted(Comparator.comparingInt(e -> e.getValue().size())) // add to smallest route first
-                    .map(Map.Entry::getKey)
-                    .findFirst()
-                    .orElse(null);
-
-            if (targetDriver != null) {
-                assignment.get(targetDriver).add(lonelyBin);
-                assignment.get(singleDriverId).clear();
-            }
-        }
-
-        // remove empty ones again
-        assignment = assignment.entrySet().stream()
-                .filter(e -> !e.getValue().isEmpty())
-                .collect(Collectors.toMap(
-                        Map.Entry::getKey,
-                        Map.Entry::getValue,
-                        (a, b) -> a,
-                        LinkedHashMap::new
-                ));
-
-        return assignment;
-    }
-
     // ✅ Deletes routes + junction rows for that date
     private void clearRoutesForDate(LocalDate routeDate) {
-
         // 1) delete junction rows first
         jdbc.update(
                 "DELETE FROM collection_route_bins crb " +
@@ -223,32 +213,33 @@ public class AutoRouteService {
         );
     }
 
-    private Long insertRouteAndReturnId(long driverId, LocalDate routeDate) {
+    private Long insertRouteAndReturnId(long driverId, LocalDate routeDate, String status) {
         return jdbc.queryForObject(
                 "INSERT INTO collection_route (created_at, status, driver_id, route_date) " +
                         "VALUES (NOW(), ?, ?, ?) RETURNING id",
                 Long.class,
-                "pending",
+                status,
                 driverId,
                 Date.valueOf(routeDate)
         );
     }
 
-    private List<BinPoint> nearestNeighborOrder(List<BinPoint> bins) {
+    // ✅ Order bins using nearest neighbor, starting from driver's current location
+    private List<BinPoint> nearestNeighborOrderFromStart(List<BinPoint> bins, double startLat, double startLng) {
         if (bins.size() <= 2) return bins;
 
         List<BinPoint> remaining = new ArrayList<>(bins);
         List<BinPoint> ordered = new ArrayList<>();
 
-        BinPoint current = remaining.remove(0);
-        ordered.add(current);
+        double curLat = startLat;
+        double curLng = startLng;
 
         while (!remaining.isEmpty()) {
             BinPoint next = null;
             double best = Double.MAX_VALUE;
 
             for (BinPoint candidate : remaining) {
-                double dist = haversine(current.lat, current.lng, candidate.lat, candidate.lng);
+                double dist = haversine(curLat, curLng, candidate.lat, candidate.lng);
                 if (dist < best) {
                     best = dist;
                     next = candidate;
@@ -257,14 +248,16 @@ public class AutoRouteService {
 
             ordered.add(next);
             remaining.remove(next);
-            current = next;
+
+            curLat = next.lat;
+            curLng = next.lng;
         }
 
         return ordered;
     }
 
     private double haversine(double lat1, double lon1, double lat2, double lon2) {
-        double R = 6371000;
+        double R = 6371000; // meters
         double dLat = Math.toRadians(lat2 - lat1);
         double dLon = Math.toRadians(lon2 - lon1);
 

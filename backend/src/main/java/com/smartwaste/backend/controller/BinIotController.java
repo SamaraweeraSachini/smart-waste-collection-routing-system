@@ -1,36 +1,77 @@
 package com.smartwaste.backend.controller;
 
-import com.smartwaste.backend.dto.BinFillUpdateRequest;
-import com.smartwaste.backend.entity.Bin;
-import com.smartwaste.backend.repository.BinRepository;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/bins")
 public class BinIotController {
 
-    private final BinRepository binRepository;
+    private final JdbcTemplate jdbc;
 
-    public BinIotController(BinRepository binRepository) {
-        this.binRepository = binRepository;
+    public BinIotController(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
     }
 
-    // ✅ IoT-like update endpoint:
-    // PATCH http://localhost:8080/api/bins/{id}/fill
-    // Body: { "fillLevel": 88 }
+    // ✅ PATCH /api/bins/{id}/fill?level=85
     @PatchMapping("/{id}/fill")
-    public ResponseEntity<?> updateBinFill(@PathVariable Long id, @RequestBody BinFillUpdateRequest req) {
-        Bin bin = binRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Bin not found: " + id));
+    public ResponseEntity<?> updateFillLevel(@PathVariable Long id, @RequestParam int level) {
 
-        int safe = Math.max(0, Math.min(100, req.getFillLevel()));
-        bin.setFillLevel(safe);
+        // 1) read current fill
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT id, fill_level, overflow FROM bin WHERE id = ?",
+                id
+        );
 
-        // Simple overflow rule: >=95 means overflow
-        bin.setOverflow(safe >= 95);
+        if (rows.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
 
-        Bin saved = binRepository.save(bin);
-        return ResponseEntity.ok(saved);
+        int currentFill = ((Number) rows.get(0).get("fill_level")).intValue();
+
+        // 2) OPTION A lock: if bin belongs to active route (assigned or in_progress)
+        Boolean locked = jdbc.queryForObject(
+                "SELECT EXISTS (" +
+                        "SELECT 1 " +
+                        "FROM collection_route_bins crb " +
+                        "JOIN collection_route cr ON cr.id = crb.route_id " +
+                        "WHERE crb.bin_id = ? AND LOWER(cr.status) IN ('assigned','in_progress')" +
+                        ")",
+                Boolean.class,
+                id
+        );
+
+        boolean isLocked = locked != null && locked;
+
+        // Ignore IoT increases when locked
+        if (isLocked && level > currentFill) {
+            return ResponseEntity.ok(Map.of(
+                    "message", "Ignored IoT increase because bin is locked in an active route",
+                    "binId", id,
+                    "currentFill", currentFill,
+                    "incomingFill", level,
+                    "locked", true
+            ));
+        }
+
+        boolean overflow = level >= 95;
+
+        // 3) update bin
+        jdbc.update(
+                "UPDATE bin SET fill_level = ?, overflow = ? WHERE id = ?",
+                level, overflow, id
+        );
+
+        return ResponseEntity.ok(Map.of(
+                "message", "Bin updated",
+                "binId", id,
+                "fillLevel", level,
+                "overflow", overflow,
+                "locked", isLocked
+        ));
     }
 }

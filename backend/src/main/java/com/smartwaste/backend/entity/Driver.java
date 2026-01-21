@@ -26,4 +26,9 @@ public class Driver {
     @Builder.Default
     @Column(nullable = false)
     private Boolean available = true; // default true to avoid null errors
+
+    // ✅ NEW: driver live location (needed for nearest-driver assignment)
+    private Double latitude;
+
+    private Double longitude;
 }

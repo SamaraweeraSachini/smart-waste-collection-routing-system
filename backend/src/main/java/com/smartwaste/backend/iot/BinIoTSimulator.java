@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
 public class BinIoTSimulator {
@@ -14,13 +15,40 @@ public class BinIoTSimulator {
     private final BinRepository binRepository;
     private final Random random = new Random();
 
+    // ✅ MAIN SWITCH (true = running, false = paused)
+    private final AtomicBoolean enabled = new AtomicBoolean(true);
+
     public BinIoTSimulator(BinRepository binRepository) {
         this.binRepository = binRepository;
+    }
+
+    // ✅ Pause IoT simulation
+    public void pause() {
+        enabled.set(false);
+        System.out.println("⏸️ IoT Simulator PAUSED");
+    }
+
+    // ✅ Resume IoT simulation
+    public void resume() {
+        enabled.set(true);
+        System.out.println("▶️ IoT Simulator RESUMED");
+    }
+
+    public boolean isEnabled() {
+        return enabled.get();
     }
 
     // ✅ Runs every 5 seconds
     @Scheduled(fixedRate = 5000)
     public void simulateBinFillChanges() {
+
+        // ✅ HARD STOP HERE
+        if (!enabled.get()) {
+            // Comment this out if you don't want console spam while paused
+            System.out.println("⏸️ IoT Simulator is paused (no updates applied)");
+            return;
+        }
+
         List<Bin> bins = binRepository.findAll();
         if (bins.isEmpty()) return;
 
@@ -30,7 +58,7 @@ public class BinIoTSimulator {
         for (int i = 0; i < updates; i++) {
             Bin bin = bins.get(random.nextInt(bins.size()));
 
-            int current = bin.getFillLevel(); // fillLevel is int in your entity (default 0 if not set)
+            int current = bin.getFillLevel();
 
             // ✅ 20% chance: simulate a truck emptying the bin
             if (random.nextInt(100) < 20) {

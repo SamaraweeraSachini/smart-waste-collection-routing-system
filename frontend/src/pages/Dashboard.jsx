@@ -1,15 +1,24 @@
-// frontend/src/pages/Dashboard.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, TileLayer, Marker, Popup, useMap, Polyline } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 
 import { getBinIcon } from "../binIcon";
 import { getDriverIcon } from "../driverIcon";
+import HeatLayer from "../components/HeatLayer";
 
-function FitBounds({ bins, drivers }) {
+const API = "http://localhost:8080";
+
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function FitBoundsOnce({ bins, drivers }) {
   const map = useMap();
+  const didFitRef = useRef(false);
 
   useEffect(() => {
+    if (didFitRef.current) return;
+
     const points = [
       ...bins.map((b) => [b.latitude, b.longitude]),
       ...drivers.map((d) => [d.latitude, d.longitude]),
@@ -17,6 +26,7 @@ function FitBounds({ bins, drivers }) {
 
     if (points.length > 0) {
       map.fitBounds(points, { padding: [50, 50] });
+      didFitRef.current = true;
     }
   }, [bins, drivers, map]);
 
@@ -28,26 +38,78 @@ export default function Dashboard() {
   const [drivers, setDrivers] = useState([]);
   const [routes, setRoutes] = useState([]);
 
-  const [selectedDate, setSelectedDate] = useState("");
+  const [selectedDate, setSelectedDate] = useState(todayISO());
   const [autoMsg, setAutoMsg] = useState("");
 
+  // Demo simulation
+  const [demoMode, setDemoMode] = useState(true);
   const [isCollecting, setIsCollecting] = useState(false);
 
   const [movingDrivers, setMovingDrivers] = useState({});
   const driverProgressRef = useRef({});
+  const collectingPlanRef = useRef({});
 
-  // ✅ LIVE bins polling
+  // ✅ Heatmap (REAL TIME, yellow/red ONLY)
+  const [heatmapOn, setHeatmapOn] = useState(false);
+  const [heatPoints, setHeatPoints] = useState([]);
+
+  const fetchBinsNow = async () => {
+    const res = await fetch(`${API}/api/bins`);
+    const data = await res.json();
+    setBins(data || []);
+    return data || [];
+  };
+
+  // ✅ Fetch heatmap from backend (backend returns only fill>=80 or overflow)
+  const fetchHeatmap = async () => {
+    try {
+      const res = await fetch(`${API}/api/heatmap/bins`);
+      const data = await res.json();
+
+      // Real-time: only yellow/red bins should be returned already.
+      // But we also double-filter here for safety.
+      const pts = (data || [])
+        .map((row) => {
+          const lat = Number(row.latitude);
+          const lng = Number(row.longitude);
+          const fill = Number(row.fill_level ?? row.fillLevel ?? 0);
+          const overflow = Boolean(row.overflow);
+
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+
+          // ✅ Only show yellow/red
+          if (!overflow && fill < 80) return null;
+
+          const intensity = Math.min(1, Math.max(0, fill / 100));
+          return [lat, lng, intensity];
+        })
+        .filter(Boolean);
+
+      setHeatPoints(pts);
+    } catch (e) {
+      console.error(e);
+      setHeatPoints([]);
+    }
+  };
+
+  // ✅ LIVE bins polling every 3 seconds + sync heatmap (real time)
   useEffect(() => {
     let alive = true;
 
-    const fetchBins = () => {
-      fetch("http://localhost:8080/api/bins")
-        .then((res) => res.json())
-        .then((data) => {
-          if (!alive) return;
-          setBins(data || []);
-        })
-        .catch(console.error);
+    const fetchBins = async () => {
+      try {
+        const res = await fetch(`${API}/api/bins`);
+        const data = await res.json();
+        if (!alive) return;
+        setBins(data || []);
+
+        // ✅ When heatmap ON, refresh heatmap at SAME RATE (real time)
+        if (heatmapOn) {
+          fetchHeatmap();
+        }
+      } catch (e) {
+        console.error(e);
+      }
     };
 
     fetchBins();
@@ -57,13 +119,14 @@ export default function Dashboard() {
       alive = false;
       clearInterval(interval);
     };
-  }, []);
+  }, [heatmapOn]);
 
-  // ✅ drivers
+  // ✅ drivers (keeps your trucks)
   useEffect(() => {
-    fetch("http://localhost:8080/api/drivers")
+    fetch(`${API}/api/drivers`)
       .then((res) => res.json())
       .then((data) => {
+        // ✅ fallback locations so trucks always appear even if DB has null lat/lng
         const driversWithLocation = (data || []).map((d, index) => ({
           ...d,
           latitude: d.latitude || 6.92 + index * 0.01,
@@ -74,34 +137,32 @@ export default function Dashboard() {
       .catch(console.error);
   }, []);
 
-  const fetchRoutes = () => {
-    return fetch("http://localhost:8080/api/routes")
-      .then((res) => res.json())
-      .then((data) => setRoutes(data || []))
-      .catch(console.error);
+  const fetchRoutes = async (dateStr) => {
+    const dateToUse = dateStr || selectedDate || todayISO();
+    const res = await fetch(`${API}/api/routes?date=${encodeURIComponent(dateToUse)}`);
+    const data = await res.json();
+    setRoutes(data || []);
+    return data || [];
   };
 
   useEffect(() => {
-    fetchRoutes();
+    fetchRoutes(todayISO());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    fetchRoutes(selectedDate);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDate]);
 
   const availableDates = useMemo(() => {
     const set = new Set();
     for (const r of routes) if (r.routeDate) set.add(r.routeDate);
+    set.add(todayISO());
     return Array.from(set).sort((a, b) => b.localeCompare(a));
   }, [routes]);
 
-  useEffect(() => {
-    if (!selectedDate && availableDates.length > 0) {
-      setSelectedDate(availableDates[0]);
-    }
-  }, [availableDates, selectedDate]);
-
-  const filteredRoutes = useMemo(() => {
-    if (!selectedDate) return routes;
-    return routes.filter((r) => r.routeDate === selectedDate);
-  }, [routes, selectedDate]);
+  const filteredRoutes = routes;
 
   const criticalBins = useMemo(
     () => bins.filter((b) => b.overflow || Number(b.fillLevel) >= 95),
@@ -118,14 +179,14 @@ export default function Dashboard() {
   }, [filteredRoutes]);
 
   const getRouteColor = (statusRaw) => {
-    const status = String(statusRaw || "").toLowerCase();
+    const status = String(statusRaw || "").trim().toLowerCase();
     if (status === "completed") return "green";
     if (status === "in_progress") return "orange";
     return "blue";
   };
 
   const getPrettyStatus = (statusRaw) => {
-    const status = String(statusRaw || "").toLowerCase();
+    const status = String(statusRaw || "").trim().toLowerCase();
     if (status === "completed") return "COMPLETED ✅";
     if (status === "in_progress") return "IN_PROGRESS 🚚";
     if (status === "assigned") return "ASSIGNED 📌";
@@ -133,31 +194,30 @@ export default function Dashboard() {
     return statusRaw;
   };
 
-  // ✅ Auto-generate routes button
-  // FIX: always set selectedDate to the date we generated for
+  const resetSimulation = (msg) => {
+    setIsCollecting(false);
+    setMovingDrivers({});
+    driverProgressRef.current = {};
+    collectingPlanRef.current = {};
+    if (msg) setAutoMsg(msg);
+  };
+
   const handleAutoGenerate = async () => {
-    setAutoMsg("Generating routes...");
+    setAutoMsg("Generating routes for today...");
 
     try {
-      const dateToUse = selectedDate && selectedDate.trim() ? selectedDate.trim() : null;
-
-      const url =
-        "http://localhost:8080/api/routes/auto-generate?threshold=80&maxStops=6" +
-        (dateToUse ? `&date=${encodeURIComponent(dateToUse)}` : "");
+      const today = todayISO();
+      const url = `${API}/api/routes/auto-generate?threshold=80&maxStops=6&date=${encodeURIComponent(today)}`;
 
       const res = await fetch(url, { method: "POST" });
       const data = await res.json();
 
       setAutoMsg(`${data.message} | routes: ${data.routesCreated} | bins used: ${data.binsUsed}`);
+      setSelectedDate(today);
 
-      // ✅ important: switch filter to the generated date
-      if (data.routeDate) setSelectedDate(data.routeDate);
+      await fetchRoutes(today);
 
-      await fetchRoutes();
-
-      setIsCollecting(false);
-      driverProgressRef.current = {};
-      setMovingDrivers({});
+      resetSimulation("");
     } catch (e) {
       console.error(e);
       setAutoMsg("Auto-generate failed. Check backend console.");
@@ -166,30 +226,63 @@ export default function Dashboard() {
 
   const handleStartCollecting = async () => {
     try {
+      const date = selectedDate || todayISO();
       setAutoMsg("Starting collecting...");
 
-      await fetchRoutes();
-
-      const targets = filteredRoutes.filter((r) => {
-        const s = String(r.status || "").toLowerCase();
-        return s !== "completed";
+      await fetch(`${API}/api/routes/start-collecting?date=${encodeURIComponent(date)}`, {
+        method: "POST",
       });
 
-      for (const r of targets) {
-        await fetch(`http://localhost:8080/api/routes/${r.id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "in_progress" }),
-        });
+      const latestBins = await fetchBinsNow();
+      const updatedRoutes = await fetchRoutes(date);
+
+      const anyInProgress = updatedRoutes.some(
+        (r) => String(r.status || "").trim().toLowerCase() === "in_progress"
+      );
+
+      if (!anyInProgress) {
+        resetSimulation("⚠️ No routes are IN_PROGRESS (already completed / none exist).");
+        return;
       }
 
-      await fetchRoutes();
+      if (!demoMode) {
+        resetSimulation("✅ Collecting started (Demo Mode OFF). Driver portal controls collection.");
+        return;
+      }
+
+      const plan = {};
+      for (const route of updatedRoutes) {
+        const status = String(route.status || "").trim().toLowerCase();
+        if (status !== "in_progress") continue;
+
+        const points =
+          route.binIds
+            ?.map((binId) => {
+              const bin = latestBins.find((b) => Number(b.id) === Number(binId));
+              return bin ? [bin.latitude, bin.longitude] : null;
+            })
+            .filter(Boolean) || [];
+
+        if (points.length >= 1) {
+          plan[route.driverId] = {
+            routeId: route.id,
+            binIds: route.binIds,
+            points,
+          };
+        }
+      }
+
+      collectingPlanRef.current = plan;
+
+      if (Object.keys(plan).length === 0) {
+        resetSimulation("⚠️ IN_PROGRESS routes exist but no valid bin coords (plan empty).");
+        return;
+      }
 
       setIsCollecting(true);
       driverProgressRef.current = {};
       setMovingDrivers({});
-
-      setAutoMsg("Collecting started ✅");
+      setAutoMsg("Collecting started ✅ (Demo Mode ON)");
     } catch (e) {
       console.error(e);
       setAutoMsg("Start collecting failed ❌ (check backend logs)");
@@ -208,49 +301,20 @@ export default function Dashboard() {
     return steps;
   };
 
-  // ✅ Build paths per driver ONLY from IN_PROGRESS routes
-  const driverPaths = useMemo(() => {
-    const map = {};
-
-    for (const route of filteredRoutes) {
-      const status = String(route.status || "").toLowerCase();
-      if (status !== "in_progress") continue;
-
-      const points =
-        route.binIds
-          ?.map((binId) => {
-            const bin = bins.find((b) => Number(b.id) === Number(binId));
-            return bin ? [bin.latitude, bin.longitude] : null;
-          })
-          .filter(Boolean) || [];
-
-      if (points.length >= 1) {
-        map[route.driverId] = {
-          points,
-          binIds: route.binIds,
-          routeId: route.id,
-        };
-      }
-    }
-
-    return map;
-  }, [filteredRoutes, bins]);
-
-  const collectBinBackend = async (binId) => {
+  const collectBinBackend = async (routeId, binId) => {
     try {
-      await fetch(`http://localhost:8080/api/bins/${binId}/collect`, {
-        method: "PATCH",
-      });
+      await fetch(`${API}/api/routes/${routeId}/collect-bin/${binId}`, { method: "POST" });
     } catch (e) {
       console.error("Collect bin failed:", e);
     }
   };
 
-  // ✅ movement engine
+  // ✅ movement engine (demo)
   useEffect(() => {
-    if (!isCollecting) return;
+    if (!isCollecting || !demoMode) return;
 
-    const driverIds = Object.keys(driverPaths);
+    const plan = collectingPlanRef.current;
+    const driverIds = Object.keys(plan);
     if (driverIds.length === 0) return;
 
     const interval = setInterval(() => {
@@ -259,15 +323,18 @@ export default function Dashboard() {
 
         for (const driverIdStr of driverIds) {
           const driverId = Number(driverIdStr);
+          const routeInfo = plan[driverId];
+          if (!routeInfo) continue;
 
-          const routeInfo = driverPaths[driverId];
-          const pathPoints = routeInfo.points;
-          const binIds = routeInfo.binIds;
-          const routeId = routeInfo.routeId;
+          const { routeId, binIds, points } = routeInfo;
 
           if (!driverProgressRef.current[driverId]) {
+            const driverObj = drivers.find((d) => Number(d.id) === Number(driverId));
+            const startLat = driverObj?.latitude ?? points[0][0];
+            const startLng = driverObj?.longitude ?? points[0][1];
+
             driverProgressRef.current[driverId] = {
-              routeIndex: 0,
+              targetIndex: 0,
               stepIndex: 0,
               steps: [],
               collectedBinIds: new Set(),
@@ -275,47 +342,38 @@ export default function Dashboard() {
               routeId,
             };
 
-            updated[driverId] = {
-              latitude: pathPoints[0][0],
-              longitude: pathPoints[0][1],
-            };
+            updated[driverId] = { latitude: startLat, longitude: startLng };
           }
 
           const progress = driverProgressRef.current[driverId];
           if (progress.completed) continue;
 
-          // if route has only 1 bin, instantly complete
-          if (pathPoints.length === 1) {
+          // 1-bin route
+          if (points.length === 1) {
             const onlyBinId = binIds?.[0];
             if (onlyBinId && !progress.collectedBinIds.has(onlyBinId)) {
               progress.collectedBinIds.add(onlyBinId);
-              collectBinBackend(onlyBinId);
+              collectBinBackend(routeId, onlyBinId);
             }
-
             progress.completed = true;
+            driverProgressRef.current[driverId] = progress;
+            continue;
+          }
 
-            fetch(`http://localhost:8080/api/routes/${routeId}/status`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ status: "completed" }),
-            }).then(() => fetchRoutes());
+          const currentLive = updated[driverId] || prev[driverId];
+          const curPos = currentLive
+            ? [currentLive.latitude, currentLive.longitude]
+            : [points[0][0], points[0][1]];
 
+          const target = points[progress.targetIndex];
+          if (!target) {
+            progress.completed = true;
             driverProgressRef.current[driverId] = progress;
             continue;
           }
 
           if (!progress.steps || progress.steps.length === 0) {
-            const current = pathPoints[progress.routeIndex];
-            const next = pathPoints[progress.routeIndex + 1];
-
-            if (!next) {
-              updated[driverId] = { latitude: current[0], longitude: current[1] };
-              progress.completed = true;
-              driverProgressRef.current[driverId] = progress;
-              continue;
-            }
-
-            progress.steps = createStepsBetween(current, next, 25);
+            progress.steps = createStepsBetween(curPos, target, 25);
             progress.stepIndex = 0;
           }
 
@@ -326,25 +384,16 @@ export default function Dashboard() {
           if (progress.stepIndex >= progress.steps.length) {
             progress.steps = [];
             progress.stepIndex = 0;
-            progress.routeIndex++;
 
-            const reachedBinId = binIds?.[progress.routeIndex];
+            const reachedBinId = binIds?.[progress.targetIndex];
             if (reachedBinId && !progress.collectedBinIds.has(reachedBinId)) {
               progress.collectedBinIds.add(reachedBinId);
-              collectBinBackend(reachedBinId);
+              collectBinBackend(routeId, reachedBinId);
             }
 
-            if (progress.routeIndex >= pathPoints.length - 1) {
+            progress.targetIndex++;
+            if (progress.targetIndex >= points.length) {
               progress.completed = true;
-
-              fetch(`http://localhost:8080/api/routes/${routeId}/status`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ status: "completed" }),
-              }).then(() => fetchRoutes());
-
-              driverProgressRef.current[driverId] = progress;
-              continue;
             }
           }
 
@@ -356,22 +405,42 @@ export default function Dashboard() {
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [driverPaths, isCollecting]);
+  }, [isCollecting, demoMode, drivers]);
+
+  // refresh routes while collecting
+  useEffect(() => {
+    if (!isCollecting) return;
+
+    const interval = setInterval(() => {
+      fetchRoutes(selectedDate);
+    }, 2000);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCollecting, selectedDate]);
+
+  // stop when no in_progress
+  useEffect(() => {
+    if (!isCollecting) return;
+
+    const anyInProgress = filteredRoutes.some(
+      (r) => String(r.status || "").trim().toLowerCase() === "in_progress"
+    );
+
+    if (!anyInProgress) {
+      resetSimulation("All routes completed ✅");
+    }
+  }, [filteredRoutes, isCollecting]);
 
   const driversToDisplay = useMemo(() => {
     return drivers.map((d) => {
       const live = movingDrivers[d.id];
       if (!live) return d;
-
-      return {
-        ...d,
-        latitude: live.latitude,
-        longitude: live.longitude,
-      };
+      return { ...d, latitude: live.latitude, longitude: live.longitude };
     });
   }, [drivers, movingDrivers]);
 
-  // ✅ helper to get a driver’s current position
+  // used for 1-bin polyline
   const getDriverPosition = (driverId) => {
     const live = movingDrivers[driverId];
     if (live) return [live.latitude, live.longitude];
@@ -388,7 +457,7 @@ export default function Dashboard() {
         <div className="sidebarTitle">⚡ Live IoT Alerts</div>
 
         <button className="btnPrimary" onClick={handleAutoGenerate}>
-          🧠 Auto-Generate Routes (80%+)
+          🧠 Auto-Generate Routes (TODAY, 80%+)
         </button>
 
         <button
@@ -399,6 +468,47 @@ export default function Dashboard() {
         >
           🚚 Start Collecting
         </button>
+
+        <div style={{ marginTop: 12, padding: 10, borderRadius: 12, background: "#f3f3f3" }}>
+          <div style={{ fontWeight: 800 }}>🎬 Demo Mode (Simulation)</div>
+          <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
+            <input
+              type="checkbox"
+              checked={demoMode}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setDemoMode(on);
+                if (!on) resetSimulation("Demo Mode OFF ✅ (Driver portal controls collection)");
+              }}
+            />
+            <span style={{ fontWeight: 700 }}>
+              {demoMode ? "ON (Dashboard moves trucks)" : "OFF (Driver portal only)"}
+            </span>
+          </label>
+        </div>
+
+        {/* ✅ Heatmap Toggle (REAL-TIME, yellow/red only) */}
+        <div style={{ marginTop: 12, padding: 10, borderRadius: 12, background: "#f3f3f3" }}>
+          <div style={{ fontWeight: 800 }}>🔥 Heatmap View (Real-time)</div>
+
+          <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
+            <input
+              type="checkbox"
+              checked={heatmapOn}
+              onChange={(e) => {
+                const on = e.target.checked;
+                setHeatmapOn(on);
+                if (on) fetchHeatmap();
+                if (!on) setHeatPoints([]);
+              }}
+            />
+            <span style={{ fontWeight: 700 }}>{heatmapOn ? "ON (yellow/red only)" : "OFF"}</span>
+          </label>
+
+          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 8 }}>
+            Updates every 3 seconds. Green bins never show heat.
+          </div>
+        </div>
 
         {autoMsg && (
           <div className="smallText" style={{ marginTop: 8 }}>
@@ -443,10 +553,9 @@ export default function Dashboard() {
         <div className="sidebarSection">
           <div className="sidebarSectionTitle">🗓️ Route Filter</div>
           <select className="select" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)}>
-            <option value="">All Dates</option>
             {availableDates.map((date) => (
               <option key={date} value={date}>
-                {date}
+                {date === todayISO() ? `${date} (Today)` : date}
               </option>
             ))}
           </select>
@@ -454,13 +563,17 @@ export default function Dashboard() {
           <div className="smallText">
             Live bin refresh: <strong>every 3 seconds</strong>
             <br />
-            Showing routes: <strong>{selectedDate || "All Dates"}</strong>
+            Showing routes: <strong>{selectedDate}</strong>
             <br />
             Routes displayed: <strong>{filteredRoutes.length}</strong>
             <br />
             ✅ Total distance: <strong>{totalDistanceKm.toFixed(2)} km</strong>
             <br />
             🚚 Collecting running: <strong>{isCollecting ? "YES" : "NO"}</strong>
+            <br />
+            🎬 Demo Mode: <strong>{demoMode ? "ON" : "OFF"}</strong>
+            <br />
+            🔥 Heatmap: <strong>{heatmapOn ? "ON" : "OFF"}</strong>
           </div>
         </div>
       </div>
@@ -469,7 +582,10 @@ export default function Dashboard() {
         <MapContainer center={[6.9271, 79.8612]} zoom={13} style={{ height: "100%", width: "100%" }}>
           <TileLayer attribution="&copy; OpenStreetMap contributors" url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
 
-          <FitBounds bins={bins} drivers={driversToDisplay} />
+          <FitBoundsOnce bins={bins} drivers={driversToDisplay} />
+
+          {/* ✅ Heatmap */}
+          <HeatLayer points={heatPoints} enabled={heatmapOn} />
 
           {/* bins */}
           {bins.map((bin) => (
@@ -484,7 +600,7 @@ export default function Dashboard() {
             </Marker>
           ))}
 
-          {/* drivers */}
+          {/* drivers (trucks) */}
           {driversToDisplay.map((driver) => (
             <Marker key={`driver-${driver.id}`} position={[driver.latitude, driver.longitude]} icon={getDriverIcon(driver.available)}>
               <Popup>
@@ -507,7 +623,7 @@ export default function Dashboard() {
                 })
                 .filter(Boolean) || [];
 
-            // ✅ FIX: if only 1 bin => draw line from driver -> bin
+            // 1-bin route -> draw driver -> bin
             let points = binPoints;
             if (binPoints.length === 1) {
               const driverPos = getDriverPosition(route.driverId);
@@ -519,7 +635,13 @@ export default function Dashboard() {
             const color = getRouteColor(route.status);
 
             return (
-              <Polyline key={`route-${route.id}`} positions={points} color={color} weight={7} opacity={0.9}>
+              <Polyline
+                key={`route-${route.id}-${String(route.status || "").trim().toLowerCase()}`}
+                positions={points}
+                color={color}
+                weight={7}
+                opacity={0.9}
+              >
                 <Popup>
                   🛣️ <strong>Route ID:</strong> {route.id}
                   <br />

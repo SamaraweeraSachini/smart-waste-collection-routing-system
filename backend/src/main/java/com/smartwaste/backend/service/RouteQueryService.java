@@ -4,6 +4,8 @@ import com.smartwaste.backend.dto.RouteDto;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.sql.Date;
+import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -16,6 +18,7 @@ public class RouteQueryService {
         this.jdbc = jdbc;
     }
 
+    // ✅ GET all routes (existing)
     public List<RouteDto> getAllRoutesWithDistance() {
 
         List<Map<String, Object>> routes = jdbc.queryForList(
@@ -24,6 +27,24 @@ public class RouteQueryService {
                         "ORDER BY id DESC"
         );
 
+        return buildDtos(routes);
+    }
+
+    // ✅ NEW: GET routes by date
+    public List<RouteDto> getRoutesByDateWithDistance(LocalDate date) {
+
+        List<Map<String, Object>> routes = jdbc.queryForList(
+                "SELECT id, driver_id, route_date, status " +
+                        "FROM collection_route " +
+                        "WHERE route_date = ? " +
+                        "ORDER BY id DESC",
+                Date.valueOf(date)
+        );
+
+        return buildDtos(routes);
+    }
+
+    private List<RouteDto> buildDtos(List<Map<String, Object>> routes) {
         List<RouteDto> result = new ArrayList<>();
 
         for (Map<String, Object> r : routes) {

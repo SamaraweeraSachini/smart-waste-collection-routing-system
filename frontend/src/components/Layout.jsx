@@ -21,6 +21,7 @@ export default function Layout() {
         <Link to="/" style={linkStyle("/")}>🗺️ Dashboard</Link>
         <Link to="/analytics" style={linkStyle("/analytics")}>📊 Analytics</Link>
         <Link to="/routes" style={linkStyle("/routes")}>Routes</Link>
+        <Link to="/driver" style={linkStyle("/driver")}>Driver Dashboard</Link>
       </div>
 
       <div style={{ flex: 1 }}>
